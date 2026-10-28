@@ -20,45 +20,212 @@ A 10-task pilot (every 15th task: all 5 categories, easy and medium only; no har
 - **Baseline** (`baseline.ts`): Claude Opus 5.5 with web search and web fetch, told to shop on Amazon. This stands in for how agents shop today.
 - **Browser Use** (`browser_use/run.py`): the open-source [browser-use](https://github.com/browser-use/browser-use) agent (0.13) driving a real headless Chromium on live Amazon, like the web agents in the paper. It runs on Claude Opus 5, not 5.5: browser-use forces a tool call on every step, which Opus 5.5 rejects. We set `use_thinking=False` because Opus 5 refuses to fill browser-use's `thinking` output field. Told to stop rather than solve a CAPTCHA.
 
-**Judge** (`judge.ts`): the paper's judge prompt word for word, with one change. The paper's judge looks at screenshots of the agent browsing; we don't browse, so the judge gets data from the chosen product's Amazon page instead, fetched independently of every system. The judge model is Claude Opus 5.5 rather than GPT-4o (no OpenAI key yet). Report results as "DeepShop (product-page judge)".
+**Judge** (`judge.ts`): the paper's judge prompt word for word, with one change. The paper's judge looks at screenshots of the agent browsing; we don't browse, so the judge gets data from the chosen product's Amazon page instead, fetched independently of every system (with ScraperAPI, the structured product data plus the key sections of the full page, from judge version 2). As in the paper, each of attribute, filter and sort is graded against its own sub-task. The judge model is Claude Opus 5.5 rather than GPT-4o (no OpenAI key yet). Report results as "DeepShop (product-page judge)".
 
-## Results (pilot, 10/150 tasks, 2026-10-24)
+## Results (pilot, 10/150 tasks, 2026-10-27)
 
-| | Success | Attribute | Filter | Sort | Median tokens/task | Median latency |
-|---|---|---|---|---|---|---|
-| **Ours** | **40%** | 70% | 50% | 20% | **~6k** | 35s |
-| Baseline (Claude + web search) | 20% | 30% | 50% | 40% | ~99k | 51s |
-| Browser Use (Opus 5, real browser) | 30% | 33% | 71% | 50% | ~380k | 105s |
-| Paper's best published | 32% | | | | | |
+| | Success | 95% CI | Attribute | Filter | Sort | Median tokens/task | Median latency |
+|---|---|---|---|---|---|---|---|
+| **Ours** | **40%** | 17–69% | 70% | 63% | 20% | **~8k** | 27s |
+| Baseline (Claude + web search) | 20% | 6–51% | 30% | 50% | 40% | ~99k | 51s |
+| Browser Use (Opus 5, real browser) | 30% | 11–60% | 33% | 71% | 50% | ~380k | 105s |
+| Channel3* | 20% | 6–51% | 50% | 50% | 20% | ~48k | 22s |
+| Shopify Catalog* | 40% | 17–69% | 70% | 63% | 0% | ~26k | 20s |
+| Paper's best published | 32% | | | | | | |
 
-About the same or better success than either agent at 1/16 to 1/60 of the tokens. Browser Use cost $13.44 in API fees for the 10 tasks (about $1.34 per task). Amazon showed it a CAPTCHA on 1 of 10 tasks (`Amazon--54`), which counts as a failure; its other per-requirement rates are over the 9 tasks it finished. One task hit a browser start-up timeout on our machine and was re-run. Ten tasks is directional, not a result.
+\*Not Amazon, and judged on the provider's own record; see [Adjacent products](#adjacent-products).
 
-The Ours row predates the relevance-search change in `ours.ts` (`97efb05`); re-run it before quoting these numbers.
+Success is over all 10 tasks: a task a system never answered counts as a failure (Browser Use hit a CAPTCHA on `Amazon--54`). The intervals all overlap, so **10 tasks can't separate these systems**; what the pilot does show is the token gap (3x fewer than Shopify's catalog, 12x fewer than the baseline, 50x fewer than Browser Use). Browser Use cost $13.44 in API fees for the 10 tasks. One of its tasks hit a browser start-up timeout on our machine and was re-run.
+
+These 10 tasks are also our **dev set**: we looked at every failure and changed `ours.ts` because of them, so they overstate us. Report the test set (below), not these.
+
+## Results (test sample, 70 of the 140 test tasks, ScraperAPI, 2026-10-27)
+
+The published sample is `--test --sample 70`. No system was tuned on it. Judge version 2 (`JUDGE_VERSION = 2`) adds the key sections of the full Amazon product page (price box, ships-from, returns, size list, bullets, details, best-seller rank) to the structured product data. That brings it closer to the paper's judge, which sees the page itself. Judge version 1 had only the structured data, which has no returns policy, no ships-from and often no size list, so it failed correct picks it couldn't confirm.
+
+| | Success | 95% CI | Attribute | Filter | Sort | Median tokens/task | Judge v1 |
+|---|---|---|---|---|---|---|---|
+| **Ours, full-page (`ours_v6`)** | **33%** | 23–44% | 60% | 50% | 37% | ~11k† | |
+| Ours (`ours.ts`) | 29% | 19–40% | 61% | 53% | 28% | ~7k | 19% |
+| Parallel | 26% | 17–37% | 57% | 47% | 26% | ~32k | 20% |
+| Ours, low-token (`ours_v4`) | 24% | 16–35% | 49% | 42% | 35% | ~1.6k | 16% |
+| Baseline (Claude + web search) | 23% | 15–34% | 60% | 42% | 28% | ~91k | 23% |
+| Exa | 23% | 15–34% | 53% | 42% | 33% | ~28k | 16% |
+| Tavily | 21% | 13–32% | 50% | 40% | 19% | ~30k | 19% |
+| Linkup | 17% | 10–28% | 60% | 34% | 26% | ~39k | 11% |
+| Shopify Catalog* | 16% | 9–26% | 67% | 21% | 21% | ~37k | |
+| Google Shopping* | 13% | 7–23% | 46% | 26% | 14% | ~15k | |
+| Channel3* | 9% | 4–17% | 44% | 18% | 26% | ~63k | |
+
+\*Judged on the provider's own record, so the full-page change doesn't apply; see [Adjacent products](#adjacent-products).
+†Claude tokens. `ours_v6` also sends a median ~35k tokens to Jev (TypeSafe's checking model, $0.042 per million input tokens, about $0.0015 a task).
+
+The intervals overlap, so lead with the paired comparison. Over the same 70 tasks, ours passes a task the other fails more often than the reverse, against every system:
+
+| Wins / losses vs | Parallel | Baseline | Exa | Tavily | Linkup | `ours` | `ours_v4` |
+|---|---|---|---|---|---|---|---|
+| `ours_v6` | 10 / 5 | 15 / 8 | 13 / 6 | 14 / 6 | 17 / 6 | 7 / 4 | 9 / 3 |
+| `ours` | 8 / 6 | 9 / 5 | 10 / 6 | 9 / 4 | 11 / 3 | | 8 / 5 |
+
+Five versions of ours ran on this sample, each frozen first and run once: `ours` (before the test run), `ours_v4` (fbbf7d2), `ours_v6` (f1e266b), `ours_v9` (804d5a9) and `ours_v10` (25d70a6). Report all five. `ours_v9` ran from cached Amazon data only. 18 tasks needed searches or pages that weren't cached, so it finished 52 of 70. On those 52 it passed 14 at ~1.5k Claude tokens, against `ours_v6` 21 (2 wins, 9 losses), `ours` 16, `ours_v4` 16 and Parallel 17. Letting Jev make the final pick costs accuracy, so Claude's final choice is worth its tokens. `ours_v10` lets Jev make the pick only when its top page passes every check, and calls Claude otherwise. It also ran from cache and finished 49 of 70. On those 49 it passed 14 at ~7.5k mean Claude tokens, against `ours_v6` 19 (0 wins, 5 losses). Jev's confident picks were wrong often enough that skipping Claude doesn't pay. On the 23 tuning tasks it had looked better (12 vs 11 at about half the tokens), which shows how little 23 tasks can resolve. `ours_v5`–`ours_v7` were tuned on the 10 dev tasks and 20 unpublished test tasks (`--test --offset 70 --sample 20`). On those 30 tasks, under judge v2, `ours` passes 8, `ours_v5` 11, `ours_v6` 12 and `ours_v7` 11. `ours_v6` was chosen for the published run on that basis. `ours_v8` (`ours_v6` without the structured fields the full page repeats) ran afterwards from cached Amazon data only. On the 28 of those tasks it could judge, it cut median tokens from ~10.3k to ~9.6k and passed 10 to `ours_v6`'s 11, with the same pick on 22. `ours_v9` (`ours_v6`'s full pages, but Jev picks and a template writes the answer, as in `ours_v4`) also ran from cache. On the 25 tasks every version could judge, it passed 10 at ~2.3k Claude tokens, against `ours_v4` 10, `ours_v6` 11 and `ours` 8. `ours_v8` has not run on the published sample. At this size the versions are within one or two tasks of each other, so separating them needs a larger tuning set.
+
+## Fresh-task run (pre-registered 2026-10-28, before any system ran on these tasks)
+
+The published 70 has now seen five versions of ours, and the judge changed (v1 to v2) after we had seen results. So treat its numbers as exploratory. This run is the one to quote. Everything below was committed before the run started.
+
+- **Tasks:** `--test --offset 90 --sample 50`: the 50 test tasks after the published 70 and the 20 tuning tasks in the hash order. No system had run on them before this commit.
+- **Code and judge:** frozen at this commit. Judge v2 is unchanged and gets the same page data for every system.
+- **Systems, in run order:**
+  - Primary: `ours_v6`, Parallel, Exa, baseline.
+  - Secondary: `ours_v11` (`ours_v6` without repeated page data, final pick at low effort), `ours`, `ours_v4`, Tavily, Linkup.
+  - Everything that runs is reported. If ScraperAPI credits run out, systems not yet run are listed as not run, and unfinished tasks count as failures.
+- **Metric:** success over all 50 tasks, unanswered tasks counted as failures, with 95% Wilson intervals. Median Claude tokens per task; Jev tokens reported separately.
+- **Primary comparison:** paired wins and losses, `ours_v6` against each competitor on the same tasks.
+- **Reruns:** only tasks that failed on infrastructure errors (timeouts, rate limits), with the same code. Each rerun is listed.
+- **No changes** to any system or the judge until every system has run and been judged.
+
+Known risks to the claim, stated up front:
+
+- `ours_v6` reads the same page sections the judge reads. That's real product data any shopper would see, but it's also the judge's evidence.
+- The judge is Claude Opus 5.5, the same model our pipeline uses, so it may favor our answers. Hand-grade 30 random verdicts across systems and report the agreement rate before publishing.
+- A different Amazon data source (Rainforest) changes everyone's scores; compare within this run only.
+
+### Fresh-run results (frozen at d93daa1, judge v2, 50 tasks)
+
+| System | Success | 95% CI | Median tokens/task | `ours_v6` wins / losses | Sign test p |
+|---|---|---|---|---|---|
+| `ours_v6` | 44% | 31–58% | ~10.8k Claude + ~36k Jev | | |
+| `ours_v11` | 44% | 31–58% | ~9.7k Claude + ~35k Jev | 2 / 2 | |
+| `ours_v4` | 36% | 24–50% | ~1.5k Claude + ~31k Jev | 6 / 2 | |
+| Parallel | 34% | 22–48% | ~33.8k | 10 / 5 | 0.30 |
+| `ours` | 32% | 21–46% | ~7.2k | 8 / 2 | |
+| Exa | 32% | 21–46% | ~24.7k | 8 / 2 | 0.11 |
+| Tavily | 30% | 19–44% | ~39.2k | 10 / 3 | 0.09 |
+| Baseline (Claude + web search) | 26% | 16–40% | ~101.8k | 11 / 2 | 0.02 |
+| Linkup | 26% | 16–40% | ~44.4k | 11 / 2 | 0.02 |
+
+Jev tokens are TypeSafe System One at $0.042/MTok, about $0.0015 a task.
+
+- **Reruns:** two `ours_v11` tasks (Amazon--128, Amazon--555) timed out on the first pass and were rerun once with the same code. No other reruns.
+- **What holds up:** `ours_v6` wins more tasks than it loses against every competitor, at 2–10x fewer Claude tokens. `ours_v11` and `ours_v4` do too, except `ours_v4` vs Parallel (8 / 7).
+- **What doesn't yet:** only the baseline and Linkup gaps are significant on their own (two-sided sign test, p = 0.02), and neither survives a correction for testing five competitors. Against Parallel and Exa it's a lead, not a proven win. 50 tasks is too few to separate 34% from 44%.
+- **Cheapest:** `ours_v4` matches or beats every competitor at ~1.5k Claude tokens.
+- Every system scored higher here than on the published 70, so these tasks look easier. Don't compare numbers across the two runs.
+- Hand-grading 30 verdicts is still to do before publishing. The sheet is ready in `handgrade/`: 30 seeded-random verdicts across all nine systems, blind to the system and the judge's call. Fill in `sheet.csv` from the task and the page facts, then compare it with `key.csv` and report the agreement rate, overall and for ours vs the rest.
+- **No more tuning on these numbers.** All 140 test tasks have now been run, so any new version has no unseen tasks to be scored on. A new version needs a new test set (for example, a re-run of all systems later on the other 70 test tasks with fresh listings) before it can be quoted.
+
+### Judge check (30 verdicts from the fresh run)
+
+We drew 30 verdicts at random from the fresh run, spread evenly across the 9 systems (3–4 each). A separate grader marked each one from the same task and page data, without seeing the system name or the judge's verdict. The grades are in `results/judge_check/`.
+
+- **Agreement:** 24/30 tasks (80%), and 62/73 individual dimensions (85%).
+- **The judge is the stricter of the two.** In 5 of the 6 disagreements the judge failed a pick that the grader passed. Most were sort calls, such as "best-selling" or "cheapest", where the page gives only partial evidence.
+- **No sign the judge favors our answers.** Five of the six disagreements involved our versions. In four of them the judge failed our pick and the grader passed it. The only pass the grader overturned was `ours` (USB hub, "best-selling"). The sixth disagreement was a Parallel pick that the judge failed and the grader passed.
+- **Caveat:** the blind grader was also Claude, not a person. It is independent of the judge's prompt and reasoning, but not of the model family. A person should still grade these 30 before we publish.
+
+### Computer-use baseline: Browser Use (pre-registered 2026-10-28, added after the fresh run)
+
+Added after the fresh run so the essay's claim (agents shopping through a browser) is measured on the same footing. Committed before it ran.
+
+- **System:** Browser Use 0.13.14 (`browser_use/run.py`), a real headless Chromium on live amazon.com, up to 40 steps, one task at a time. It runs on `claude-opus-5` because browser-use 0.13 can't drive Opus 5.5 (it forces a tool choice Opus 5.5 rejects).
+- **Tasks and judge:** the same 50 fresh tasks and the same judge v2 on ScraperAPI page data. No change to any of our systems or the judge.
+- **Scoring:** success over all 50. A CAPTCHA or bot check (the agent is told not to solve it), a step-limit stop or no product counts as a failure.
+- **Reruns:** only browser start-up or network failures, once, with the same code; each listed. Blocked tasks are not rerun.
+- **Reported:** success with its 95% CI, median minutes, tokens and dollars per task, blocked count, and paired wins and losses against `ours_v11` and `ours_v6`.
+- **Caveat:** Amazon's live pages differ a little from the ScraperAPI copies the other systems saw, and a few hours later than the fresh run.
+
+#### Browser Use results
+
+| | Success | 95% CI | Median per task | Blocked by Amazon |
+|---|---|---|---|---|
+| Browser Use (Claude Opus 5, live browser) | 44% (22/50) | 31–58% | ~527k tokens, 2.7 min, $1.69, 16 steps | 9 of 50 |
+| `ours_v11` | 44% (22/50) | 31–58% | ~9.7k Claude tokens, 11 s | 0 |
+| `ours_v6` | 44% (22/50) | 31–58% | ~10.8k Claude tokens, 47 s | 0 |
+
+- **Accuracy is a tie.** Paired: `ours_v11` 4 wins / 4 losses, `ours_v6` 5 / 5. Browser Use beats Parallel (8 / 3) and Claude + web search (10 / 1) by a wide margin.
+- **On the 41 tasks where it wasn't blocked**, it passed 22, `ours_v11` 21 and `ours_v6` 20. When it gets in, a browser agent reading the live page is as accurate as we are.
+- **What it costs to get there:** about 50x the tokens, 15x the time and 9 of 50 tasks stopped by Amazon's bot check. The whole run cost $93 in Claude usage.
+- **Reruns:** 8 tasks hit a network outage on this machine (no result, 0 tokens) and were rerun once with the same code: Amazon--91, --281, --363, --213, --555, --576, --162, --178. One of them (Amazon--555) was blocked on the rerun and counts as a failure. Bot-checked tasks were not rerun.
+- **Caveat, in both directions:** the agent ran from a Singapore IP, so Amazon showed Singapore delivery and often SGD prices (25 of 50 answers mention it), and that may have raised its bot-check rate. The judge graded its picks on the US page like everyone else's. A US-proxy run might score it higher.
+- **What this means for the pitch:** the advantage over computer-use agents is speed, cost and not getting blocked, not accuracy. Microsoft's 11.6–32% on DeepShop came from smaller models; Browser Use on a frontier model matches us.
+
+## Publishing a result
+
+1. **Freeze the code.** Note the commit hash; no changes to any system or the judge after the test run starts.
+2. **Run every system on the test set** (`--test`: the 140 tasks outside the pilot, never tuned on), in the same week, since Amazon listings change.
+3. **Report success with its 95% CI** over all 140 tasks, unanswered tasks counted as failures. Lead with the comparison the intervals support.
+4. **Check the judge.** It's Claude Opus 5.5, the same model our pipeline uses, so it may favor our answers. Hand-grade a random 30 verdicts across systems and report the agreement rate.
+5. **Publish `results/`** (every answer and verdict) with the commit hash, so anyone can audit a task.
+6. **Keep Channel3 and Shopify separate** from the Amazon systems, with the caveat below.
 
 ## How our pipeline works
 
 1. **Compile the query** (1 LLM call, low effort) into a structured search. The camera example becomes: search term "compact digital camera 10x zoom", price $100–300, rating ≥ 4, sort featured, must-haves ["10x+ zoom", "compact"].
-2. **One Amazon search** via Rainforest, sorted as asked. Price, rating and review-count filters are applied in code, not by the LLM. Keep the top 15.
-3. **Shortlist** (1 LLM call, low effort): the 2 most likely matches from titles, prices and ratings.
-4. **Verify and answer** (1 LLM call, medium effort): fetch those 2 full product pages (specs, bullets, reviews), pick the one that satisfies every requirement, write the answer.
+2. **Amazon search** via Rainforest, by relevance plus Amazon's own sort when one is asked for (including best sellers). Price, rating and review-count filters are applied in code, not by the LLM: products that pass every filter rank first, then near misses. Keep the top 15.
+3. **Shortlist** (1 LLM call, low effort): the 2 most likely matches from titles, prices and ratings. If none is even the right kind of product, search once more with a better term.
+4. **Verify and answer** (1 LLM call, medium effort): fetch those 2 full product pages (specs, bullets, reviews, size/color variants), pick the one that best satisfies the task, and the variant matching any size or color it names. Always answers: if nothing meets every requirement, it picks the closest and says what it misses.
 
-3 small LLM calls and about 3 Amazon lookups. The model only ever sees structured product data, never web pages, which is where the token savings come from.
+3 to 5 small LLM calls and 3 to 4 Amazon lookups. The model only ever sees structured product data, never web pages, which is where the token savings come from.
 
 ## Known weaknesses
 
-- **Sort (20%)**: we see one page of results, so "cheapest" or "highest rated" is judged from about 15 products, not the full set.
-- **No product found (2/10)**: no retry with a different query when the first search misses.
+- **Sort (20%)**: we see one page of results, so "cheapest" or "highest rated" is judged from about 15 products, not the full set. "Best-selling" depends on a rank many product pages don't show.
+- **Cheapest-item tasks** pull in junk listings (a $3 "running shoe" with no reviews).
 - **Latency (35s)**: almost all of it is live Rainforest lookups. Pre-indexing products would bring it to a few seconds.
+
+## Adjacent products
+
+`providers.ts` wraps the products an agent builder would use instead of us. Each one is the only tool of the same Claude agent (`tool_agent.ts`: Claude Opus 5.5, up to 4 searches, then it must answer), so the difference between rows is the data, not the agent.
+
+| System | What the agent searches | Key | Judged on |
+|---|---|---|---|
+| `channel3` | Channel3 catalog, any retailer | `CHANNEL3_API_KEY` | Channel3's own record |
+| `shopify_catalog` | Shopify Global Catalog over UCP (Shopify merchants, no Amazon) | none | Shopify's own record |
+| `google_shopping` | Google Shopping via SerpApi, any retailer | `SERPAPI_API_KEY` | Google's own record |
+| `exa` | Exa web search, amazon.com only | `EXA_API_KEY` | Amazon page |
+| `linkup` | Linkup web search, amazon.com only | `LINKUP_API_KEY` | Amazon page |
+| `parallel` | Parallel web search, amazon.com only | `PARALLEL_API_KEY` | Amazon page |
+| `tavily` | Tavily web search, amazon.com only | `TAVILY_API_KEY` | Amazon page |
+
+Rye isn't here: its API checks out a product URL you already picked and has no search, so there is nothing to compare on choosing the product. ChatGPT and Perplexity shopping and Amazon's Rufus have no public API.
+
+Things to know before quoting these:
+
+- **`channel3`, `shopify_catalog` and `google_shopping` aren't apples to apples.** Neither returns Amazon products, so they pick from other retailers ("on Amazon" is dropped from the task), and the judge grades the provider's own record of the product instead of an independently fetched page. That favors them: the judge can't catch data the provider got wrong. Rating and review-count filters also use their review counts, not Amazon's.
+- **Channel3 search has no Amazon offers** (checked 2026-10-27). amazon.com is in its website list, but filtering search on it, by domain or by website id, returns nothing, and unfiltered results come from Walmart, Best Buy, Adorama and others.
+- **Shopify is keyless** and uses Shopify's example agent profile unless `SHOPIFY_AGENT_PROFILE` points to your own. Its terms forbid caching catalog results, so its searches are never cached and re-runs make live calls.
+- **Cost:** each tool-agent task is up to 5 Opus calls plus up to 4 provider searches, then the judge. Other providers' responses are cached in `evals/.cache/<provider>/`.
+
+## Amazon data source
+
+Every Amazon search and product page, for our pipeline and for the judge, comes from one source per run:
+
+- **Rainforest** (default): richer pages (specs, reviews, the selected size and color in the title). Used for the dev results above.
+- **ScraperAPI** (`AMAZON_DATA=scraperapi`): what the test run uses, because its free trial covers it. Pages are thinner: often no specs or reviews, the star rating is computed from the star distribution, and sizes are often missing from the variant list. Results go to `results/scraperapi/`.
+
+Thinner pages make the judge stricter for every Amazon system alike: it fails an answer when the page can't confirm a size or color. On the 10 dev tasks our pipeline scored 40% on Rainforest and 20% on ScraperAPI (picking a different product on 7 of 10, since search results differ too). Compare systems within one source, never across.
 
 ## Running it
 
-Needs `ANTHROPIC_API_KEY` and `RAINFOREST_API_KEY` in `.env`. Rainforest responses are cached in `evals/.cache/` so re-runs cost no credits. A full 150-task run needs about 600 Rainforest credits.
+Needs `ANTHROPIC_API_KEY` and `RAINFOREST_API_KEY` in `.env`. Rainforest responses are cached in `evals/.cache/` so re-runs cost no credits. A test-set run of ours needs about 600 Rainforest credits, and judging each Amazon system needs about 1 credit per task, so all systems together need roughly 1,200 (the free plan has 100 a month; Starter has 10,000).
 
 ```bash
-node --env-file=.env evals/deepshop/run.ts --pilot            # 10 tasks, both systems
+node --env-file=.env evals/deepshop/run.ts --pilot            # dev set: 10 tasks, every system whose keys are set
+node --env-file=.env evals/deepshop/run.ts --test             # test set: the other 140 tasks; report these
+AMAZON_DATA=scraperapi node --env-file=.env evals/deepshop/run.ts --test --sample 70   # the published run: a fixed sample of 70 test tasks
 node --env-file=.env evals/deepshop/run.ts --system ours      # all 150, ours only
+node --env-file=.env evals/deepshop/run.ts --pilot --system channel3,shopify_catalog   # a comma-separated subset
 node --env-file=.env evals/deepshop/run.ts --pilot --report   # print the table without running
 ```
+
+For a video demo, `demo.ts` runs one request and prints each step live (the plan, every result's checks, the product pages, the pick) with a clock and token count; run `--system baseline` in a second terminal for Claude with web search. `--fresh` skips cached responses so the timing is live:
+
+```bash
+node --env-file=.env evals/deepshop/demo.ts --fresh --task Amazon--128
+node --env-file=.env evals/deepshop/demo.ts --system baseline --task Amazon--128
+```
+
+The adjacent-product systems also need the keys in the table above; `--system all` skips any whose keys are missing and says so.
 
 Browser Use runs from Python (3.12) with its own Chromium:
 
